@@ -1,44 +1,89 @@
-name: Deploy to GitHub Pages
+name: Deploy Pages
 
 on:
-  push:
-    branches:
-      - gh-pages
+  workflow_dispatch:
+  repository_dispatch:
+    types: [deploy]
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying; no build step needed
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          lfs: true # Crucial step to fetch the actual LFS binaries
-      
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-        
-      - name: Upload artifact
+      - name: Download Artifact from Build
+        env:
+          REPO_PAT: ${{ secrets.REPO_PAT }}
+        run: |
+          python3 -c '
+          import os, urllib.request, json
+          token = os.environ.get("REPO_PAT")
+          if not token:
+              print("ERROR: REPO_PAT secret is missing!")
+              exit(1)
+          
+          # Get latest artifact ID
+          req = urllib.request.Request(
+              "https://api.github.com/repos/86ravi-lgtm/cports/actions/artifacts?name=chimera-overlay-packages&per_page=1",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+          )
+          with urllib.request.urlopen(req) as resp:
+              data = json.loads(resp.read().decode())
+              if not data.get("artifacts"):
+                  print("ERROR: No artifacts found!")
+                  exit(1)
+              artifact_id = data["artifacts"][0]["id"]
+              print(f"Latest Artifact ID: {artifact_id}")
+          
+          # Custom redirect handler to strip Authorization
+          class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+                  if redirected is not None:
+                      if "Authorization" in redirected.headers:
+                          del redirected.headers["Authorization"]
+                      if hasattr(redirected, "unredirected_hdrs"):
+                          redirected.unredirected_hdrs.pop("Authorization", None)
+                  return redirected
+
+          opener = urllib.request.build_opener(SafeRedirectHandler)
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/86ravi-lgtm/cports/actions/artifacts/{artifact_id}/zip",
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+          )
+          print("Downloading artifact...")
+          with opener.open(req) as resp:
+              with open("artifact.zip", "wb") as f:
+                  f.write(resp.read())
+          print("Artifact downloaded successfully!")
+          '
+
+      - name: Extract Artifact
+        run: |
+          python3 -c '
+          import zipfile
+          with zipfile.ZipFile("artifact.zip", "r") as zip_ref:
+              zip_ref.extractall("packages")
+          '
+          # Remove debug packages to save space
+          rm -rf packages/main/debug
+          ls -R packages
+
+      - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository contents
-          path: '.'
-          
+          path: packages/
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
