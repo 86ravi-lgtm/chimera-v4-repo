@@ -79,6 +79,19 @@ jobs:
           rm -rf packages/main/debug
           ls -R packages
 
+      - name: Generate Public Key from Secret
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            # Handle both base64-encoded and raw RSA key strings
+            echo "$SIGNING_KEY" | base64 -d > repo.rsa 2>/dev/null || echo "$SIGNING_KEY" > repo.rsa
+            openssl rsa -in repo.rsa -pubout -out packages/repo.rsa.pub
+            echo "Public key generated and copied to packages/repo.rsa.pub"
+          else
+            echo "WARNING: SIGNING_KEY secret is not set in this repository. Public key will not be hosted."
+          fi
+
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
